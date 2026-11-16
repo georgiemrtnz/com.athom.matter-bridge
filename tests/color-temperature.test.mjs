@@ -37,6 +37,7 @@ async function startBridge(light, storageServiceLocation) {
   const devices = new EventEmitter();
   devices.connect = async () => {};
   devices.getDevices = async () => { return { [light.id]: light }; };
+  devices.getDevice = async ({ id }) => { return id === light.id ? light : null; };
   const errors = [];
   const bridge = new MatterBridgeServer({
     api: { devices, drivers: { connect: async () => {}, getDrivers: async () => { return {}; } } },

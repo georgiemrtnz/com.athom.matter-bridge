@@ -70,6 +70,7 @@ test('thermostat synchronization does not override Homey schedules', { timeout: 
   const manager = new EventEmitter();
   manager.connect = async () => {};
   manager.getDevices = async () => { return devicesById; };
+  manager.getDevice = async ({ id }) => { return devicesById[id]; };
   const errors = [];
   const discriminator = randomInt(1, 4096);
   const bridge = new MatterBridgeServer({

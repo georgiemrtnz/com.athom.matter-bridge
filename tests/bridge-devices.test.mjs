@@ -71,6 +71,7 @@ test('all supported Homey device mappings initialize with the current Matter mod
   const devices = new EventEmitter();
   devices.connect = async () => {};
   devices.getDevices = async () => { return devicesById; };
+  devices.getDevice = async ({ id }) => { return devicesById[id]; };
   const directory = await mkdtemp(join(tmpdir(), 'matter-device-models-'));
   const errors = [];
   const bridge = new MatterBridgeServer({

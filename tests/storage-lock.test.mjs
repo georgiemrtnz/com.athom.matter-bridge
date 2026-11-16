@@ -14,7 +14,7 @@ after(async () => {
 
 const api = {
   drivers: { connect: async () => {}, getDrivers: async () => ({}) },
-  devices: { connect: async () => {}, getDevices: async () => ({}), on: () => {} },
+  devices: { connect: async () => {}, getDevices: async () => ({}), getDevice: async () => null, on: () => {} },
 };
 
 function createServer(uniqueId, releaseStaleStorageLock) {
