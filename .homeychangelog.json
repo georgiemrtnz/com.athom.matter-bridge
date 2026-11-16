@@ -82,5 +82,8 @@
   },
   "0.9.2": {
     "en": "Fixed thermostat state updates causing unintended temperature overrides. Temperature commands now preserve half-degree setpoints."
+  },
+  "0.9.3": {
+    "en": "Bridge subscribes only to shared devices, reducing hub memory use."
   }
 }
