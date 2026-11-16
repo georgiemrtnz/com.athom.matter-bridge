@@ -80,28 +80,155 @@ test('startup fetches only selected devices and never connects the device or dri
   assert.equal(other.listenerCount('update'), 0);
 });
 
-test('device-only updates initialize selected devices when ready and ignore subsequent updates', async (t) => {
+const flush = async () => { for (let i = 0; i < 20; i += 1) await new Promise((resolve) => { setImmediate(resolve); }); };
+
+// getDevice returns a fresh plain snapshot each call, as the real API does; the
+// fake item itself never emits 'update' on its own (Homey announces readiness on
+// the manager namespace, which the bridge does not subscribe to).
+function serveSnapshots(devices, calls, snapshots) {
+  devices.getDevice = async ({ id }) => {
+    calls.getDevice.push(id);
+    return snapshots[id]();
+  };
+}
+
+test('readiness from an item update attaches once; unrelated updates do not re-attach', async (t) => {
   const device = new FakeDevice({ id: 'lamp', name: 'Test lamp', ready: false });
-  const { server, devices, endpoints, initialized } = makeServer(t, { lamp: device });
+  const { server, endpoints, initialized } = makeServer(t, { lamp: device });
 
   await server.start();
   t.after(async () => { await server.stop(); });
   assert.deepEqual(endpoints, ['lamp']);
   assert.deepEqual(initialized, []);
 
-  assert.doesNotThrow(() => { device.emit('update', {}); });
-  devices.emit('device.update', { id: 'lamp', ready: true }); // manager events are not consumed
+  device.__update({});
   assert.deepEqual(initialized, []);
 
-  device.ready = true;
-  assert.doesNotThrow(() => { device.emit('update', { ready: true }); });
+  device.__update({ ready: true });
   assert.deepEqual(initialized, ['lamp']);
 
   device.__update({ name: 'Renamed lamp' });
-  device.__update({ ready: false });
   device.__update({ ready: true });
   assert.deepEqual(initialized, ['lamp']);
   assert.deepEqual(endpoints, ['lamp']);
+});
+
+test('a device not ready at start is attached by the 30 s re-check without any item event', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const device = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: false });
+  const { server, devices, calls, endpoints, initialized } = makeServer(t, { lamp: device });
+  let ready = false;
+  serveSnapshots(devices, calls, { lamp: () => ({ id: 'lamp', name: 'Lamp', ready, capabilitiesObj: {} }) });
+  // The first read (startup) returns the subscribed item; later reads are snapshots.
+  const firstGet = devices.getDevice;
+  devices.getDevice = async (args) => (calls.getDevice.length === 0 ? (calls.getDevice.push(args.id), device) : firstGet(args));
+
+  await server.start();
+  t.after(async () => { await server.stop(); });
+  assert.deepEqual(endpoints, ['lamp']);
+  assert.ok(server.deviceEndpoints.lamp);
+  assert.equal(server.deviceEndpointInstances.lamp, undefined);
+  assert.ok(server.__pendingInitTimer, 'a re-check is scheduled');
+
+  // Still not ready at the first re-check: reschedules.
+  t.mock.timers.tick(30000); await flush();
+  assert.deepEqual(calls.getDevice, ['lamp', 'lamp']);
+  assert.deepEqual(initialized, []);
+
+  ready = true;
+  t.mock.timers.tick(30000); await flush();
+  assert.deepEqual(calls.getDevice, ['lamp', 'lamp', 'lamp']);
+  assert.deepEqual(initialized, ['lamp']);
+  assert.ok(server.deviceEndpointInstances.lamp);
+  assert.equal(server.__pendingInitTimer, null, 'the re-check stops once attached');
+
+  t.mock.timers.tick(30000); await flush();
+  assert.deepEqual(calls.getDevice, ['lamp', 'lamp', 'lamp']);
+  assert.equal(calls.managerConnect, 0);
+  assert.equal(calls.getDevices, 0);
+});
+
+test('a device selected while not ready is attached by the re-check', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const lamp = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: true });
+  const blind = new FakeDevice({ id: 'blind', name: 'Blind', ready: false });
+  const { server, devices, calls, initialized } = makeServer(t, { lamp, blind }, { enabled: ['lamp'] });
+
+  await server.start();
+  t.after(async () => { await server.stop(); });
+  assert.equal(server.__pendingInitTimer, null, 'nothing pending while all devices are attached');
+
+  await server.enableDevice('blind');
+  assert.deepEqual(initialized, ['lamp']);
+  assert.ok(server.__pendingInitTimer);
+
+  let ready = true;
+  serveSnapshots(devices, calls, { blind: () => ({ id: 'blind', name: 'Blind', ready, capabilitiesObj: {} }) });
+  t.mock.timers.tick(30000); await flush();
+  assert.deepEqual(initialized, ['lamp', 'blind']);
+  assert.equal(server.__pendingInitTimer, null);
+  ready = false;
+});
+
+test('stop clears a pending re-check so nothing runs after close', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const device = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: false });
+  const { server, calls } = makeServer(t, { lamp: device });
+
+  await server.start();
+  assert.ok(server.__pendingInitTimer);
+  const before = calls.getDevice.length;
+  await server.stop();
+  assert.equal(server.__pendingInitTimer, null);
+
+  t.mock.timers.tick(120000); await flush();
+  assert.equal(calls.getDevice.length, before);
+  server.__schedulePendingInit();
+  assert.equal(server.__pendingInitTimer, null, 'no re-check is scheduled once stopped');
+});
+
+test('ready -> not ready -> ready detaches bindings, keeps the endpoint, and re-attaches', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const device = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: true });
+  const { server, devices, calls, endpoints, initialized, uninitialized } = makeServer(t, { lamp: device });
+  const destroyed = [];
+  const childDeleted = [];
+
+  await server.start();
+  t.after(async () => { await server.stop(); });
+  assert.deepEqual(initialized, ['lamp']);
+  server.deviceEndpointInstances.lamp = new Set([{ delete: async () => { childDeleted.push('main'); } }]);
+  server.deviceCapabilityInstances.lamp = { onoff: { destroy: () => { destroyed.push('onoff'); } } };
+  const bridgedEndpoint = server.deviceEndpoints.lamp;
+
+  // Backing app restarts: the device reports not ready (no further item events).
+  device.__update({ ready: false });
+  await flush();
+  assert.deepEqual(destroyed, ['onoff']);
+  assert.deepEqual(childDeleted, ['main']);
+  assert.equal(server.deviceEndpointInstances.lamp, undefined);
+  assert.equal(server.deviceEndpoints.lamp, bridgedEndpoint, 'bridged endpoint is kept for Apple Home');
+  assert.deepEqual(uninitialized, []);
+  assert.ok(server.__pendingInitTimer);
+
+  serveSnapshots(devices, calls, { lamp: () => ({ id: 'lamp', name: 'Lamp', ready: true, capabilitiesObj: {} }) });
+  t.mock.timers.tick(30000); await flush();
+  assert.deepEqual(initialized, ['lamp', 'lamp']);
+  assert.deepEqual(endpoints, ['lamp']);
+  assert.equal(server.__pendingInitTimer, null);
+});
+
+test('becoming ready again while a detach is queued still re-attaches', async (t) => {
+  const device = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: true });
+  const { server, initialized } = makeServer(t, { lamp: device });
+  await server.start();
+  t.after(async () => { await server.stop(); });
+  server.deviceEndpointInstances.lamp = new Set();
+
+  device.__update({ ready: false });
+  device.__update({ ready: true });
+  await flush();
+  assert.deepEqual(initialized, ['lamp', 'lamp']);
 });
 
 test('a missing selected device is skipped; other fetch errors fail startup', async (t) => {

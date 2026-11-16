@@ -85,5 +85,8 @@
   },
   "0.9.3": {
     "en": "Bridge subscribes only to shared devices, reducing hub memory use."
+  },
+  "0.9.4": {
+    "en": "Selected devices that are not ready when the bridge starts (for example right after a Homey restart) are now connected as soon as they become ready."
   }
 }
