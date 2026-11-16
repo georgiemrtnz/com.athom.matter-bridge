@@ -88,5 +88,8 @@
   },
   "0.9.4": {
     "en": "Selected devices that are not ready when the bridge starts (for example right after a Homey restart) are now connected as soon as they become ready."
+  },
+  "0.9.5": {
+    "en": "Shared devices keep their Apple Home accessory unchanged while their app restarts."
   }
 }

@@ -187,7 +187,7 @@ test('stop clears a pending re-check so nothing runs after close', async (t) => 
   assert.equal(server.__pendingInitTimer, null, 'no re-check is scheduled once stopped');
 });
 
-test('ready -> not ready -> ready detaches bindings, keeps the endpoint, and re-attaches', async (t) => {
+test('ready -> not ready -> ready keeps endpoints and bindings (Apple Home never sees a change)', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const device = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: true });
   const { server, devices, calls, endpoints, initialized, uninitialized } = makeServer(t, { lamp: device });
@@ -197,38 +197,51 @@ test('ready -> not ready -> ready detaches bindings, keeps the endpoint, and re-
   await server.start();
   t.after(async () => { await server.stop(); });
   assert.deepEqual(initialized, ['lamp']);
-  server.deviceEndpointInstances.lamp = new Set([{ delete: async () => { childDeleted.push('main'); } }]);
+  const children = new Set([{ delete: async () => { childDeleted.push('main'); } }]);
+  server.deviceEndpointInstances.lamp = children;
   server.deviceCapabilityInstances.lamp = { onoff: { destroy: () => { destroyed.push('onoff'); } } };
   const bridgedEndpoint = server.deviceEndpoints.lamp;
 
-  // Backing app restarts: the device reports not ready (no further item events).
+  // Backing app restarts: the device reports not ready.
   device.__update({ ready: false });
   await flush();
-  assert.deepEqual(destroyed, ['onoff']);
-  assert.deepEqual(childDeleted, ['main']);
-  assert.equal(server.deviceEndpointInstances.lamp, undefined);
-  assert.equal(server.deviceEndpoints.lamp, bridgedEndpoint, 'bridged endpoint is kept for Apple Home');
+  assert.deepEqual(destroyed, [], 'capability bindings are kept');
+  assert.deepEqual(childDeleted, [], 'child endpoints are kept');
+  assert.equal(server.deviceEndpointInstances.lamp, children);
+  assert.equal(server.deviceEndpoints.lamp, bridgedEndpoint);
   assert.deepEqual(uninitialized, []);
+  assert.ok(server.__pendingInitTimer, 'a re-check refreshes the device once it is ready');
+
+  // Still not ready at the first re-check: keep re-checking.
+  serveSnapshots(devices, calls, { lamp: () => ({ id: 'lamp', name: 'Lamp', ready: false, capabilitiesObj: {} }) });
+  t.mock.timers.tick(30000); await flush();
   assert.ok(server.__pendingInitTimer);
 
   serveSnapshots(devices, calls, { lamp: () => ({ id: 'lamp', name: 'Lamp', ready: true, capabilitiesObj: {} }) });
   t.mock.timers.tick(30000); await flush();
-  assert.deepEqual(initialized, ['lamp', 'lamp']);
+  assert.equal(device.ready, true);
+  assert.deepEqual(initialized, ['lamp'], 'no re-attach: bindings were never removed');
   assert.deepEqual(endpoints, ['lamp']);
-  assert.equal(server.__pendingInitTimer, null);
+  assert.deepEqual(destroyed, []);
+  assert.deepEqual(childDeleted, []);
+  assert.equal(server.__pendingInitTimer, null, 'timer stops once all devices are ready');
+  assert.equal(calls.getDevices, 0);
+  assert.equal(calls.managerConnect, 0);
 });
 
-test('becoming ready again while a detach is queued still re-attaches', async (t) => {
+test('a flapping not-ready/ready device is never re-attached or duplicated', async (t) => {
   const device = new FakeDevice({ id: 'lamp', name: 'Lamp', ready: true });
-  const { server, initialized } = makeServer(t, { lamp: device });
+  const { server, initialized, uninitialized } = makeServer(t, { lamp: device });
   await server.start();
   t.after(async () => { await server.stop(); });
-  server.deviceEndpointInstances.lamp = new Set();
 
   device.__update({ ready: false });
   device.__update({ ready: true });
+  device.__update({ ready: false });
+  device.__update({ ready: true });
   await flush();
-  assert.deepEqual(initialized, ['lamp', 'lamp']);
+  assert.deepEqual(initialized, ['lamp']);
+  assert.deepEqual(uninitialized, []);
 });
 
 test('a missing selected device is skipped; other fetch errors fail startup', async (t) => {
