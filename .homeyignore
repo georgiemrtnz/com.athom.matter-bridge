@@ -2,3 +2,6 @@ tests/
 scripts/
 docs/
 output/
+agent-checkpoint.md
+agent-lessons.md
+memory-observations.jsonl

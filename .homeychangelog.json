@@ -91,5 +91,8 @@
   },
   "0.9.5": {
     "en": "Shared devices keep their Apple Home accessory unchanged while their app restarts."
+  },
+  "0.9.6": {
+    "en": "Uses less memory by loading only the Matter types the bridge needs and logging Matter internals at notice level."
   }
 }
